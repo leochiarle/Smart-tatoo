@@ -1,94 +1,63 @@
-/*********************************************************
-This is a library for the MPR121 12-channel Capacitive touch sensor
+/*
+  MPR121 touch test - all 12 electrodes (0 to 11).
+  Prints "Sensor N touched" when the pad on electrode N is touched.
 
-Designed specifically to work with the MPR121 Breakout in the Adafruit shop
-  ----> https://www.adafruit.com/products/
-
-These sensors use I2C communicate, at least 2 pins are required
-to interface
-
-Adafruit invests time and resources providing this open source code,
-please support Adafruit and open-source hardware by purchasing
-products from Adafruit!
-
-Written by Limor Fried/Ladyada for Adafruit Industries.
-BSD license, all text above must be included in any redistribution
-**********************************************************/
+  Wiring: VIN->3.3V, GND->GND, SDA->SDA, SCL->SCL, copper pads -> electrodes 0..11
+  Serial Monitor: 115200 baud. Keep hands off all pads while powering up.
+*/
 
 #include <Wire.h>
 #include "Adafruit_MPR121.h"
 
-#ifndef _BV
-#define _BV(bit) (1 << (bit))
-#endif
-
-// You can have up to 4 on one i2c bus but one is enough for testing!
 Adafruit_MPR121 cap = Adafruit_MPR121();
 
-// Keeps track of the last pins touched
-// so we know when buttons are 'released'
-uint16_t lasttouched = 0;
-uint16_t currtouched = 0;
+const int NUM_SENSORS = 12;
+const int DROP_THRESHOLD = 5;   // how far the reading must fall to count as a touch
+
+int  softBaseline[NUM_SENSORS];
+bool wasTouched[NUM_SENSORS];
 
 void setup() {
   Serial.begin(115200);
+  delay(10);
 
-  while (!Serial) { // needed to keep leonardo/micro from starting too fast!
-    delay(10);
-  }
-
-  Serial.println("Adafruit MPR121 Capacitive Touch sensor test");
-
-  // Default address is 0x5A, if tied to 3.3V its 0x5B
-  // If tied to SDA its 0x5C and if SCL then 0x5D
   if (!cap.begin(0x5A)) {
-    Serial.println("MPR121 not found, check wiring?");
-    while (1);
+    Serial.println("MPR121 not found - check wiring.");
+    while (1) delay(10);
   }
-  Serial.println("MPR121 found!");
 
-  // This is generally recommended since it seems to work well for most setups.
-  // Can remove if wanting to manually configure touch channels (CDC and CDT).
-  Serial.println("Running auto configuration.");
-  cap.setAutoconfig(true);
+  // Restart sensing so the chip settles, then take our own baseline per pad
+  cap.writeRegister(MPR121_ECR, 0x00);
+  delay(200);
+  cap.writeRegister(MPR121_ECR, 0x8F);
+  delay(500);
 
-  Serial.println("Initialization complete.");
+  for (int s = 0; s < NUM_SENSORS; s++) {
+    long sum = 0;
+    for (int i = 0; i < 20; i++) { sum += cap.filteredData(s); delay(5); }
+    softBaseline[s] = sum / 20;
+    wasTouched[s] = false;
+  }
+
+  Serial.println("Ready. Touch any pad (0-11).");
 }
 
 void loop() {
-  // Get the currently touched pads
-  currtouched = cap.touched();
+  uint16_t chipTouched = cap.touched();   // bit s = electrode s
 
-  for (uint8_t i=0; i<12; i++) {
-    // it if *is* touched and *wasnt* touched before, alert!
-    if ((currtouched & _BV(i)) && !(lasttouched & _BV(i)) ) {
-      Serial.print(i); Serial.println(" touched");
+  for (int s = 0; s < NUM_SENSORS; s++) {
+    // Touch if the chip reports it OR the reading drops below our baseline
+    bool chipSaysTouched = chipTouched & (1 << s);
+    bool dropped = (softBaseline[s] - (int)cap.filteredData(s)) > DROP_THRESHOLD;
+    bool touched = chipSaysTouched || dropped;
+
+    if (touched && !wasTouched[s]) {
+      Serial.print("Sensor ");
+      Serial.print(s);
+      Serial.println(" touched");
     }
-    // if it *was* touched and now *isnt*, alert!
-    if (!(currtouched & _BV(i)) && (lasttouched & _BV(i)) ) {
-      Serial.print(i); Serial.println(" released");
-    }
+    wasTouched[s] = touched;
   }
 
-  // reset our state
-  lasttouched = currtouched;
-
-  // comment out this line for detailed data from the sensor!
-  return;
-
-  // debugging info, what
-  Serial.print("\t\t\t\t\t\t\t\t\t\t\t\t\t 0x"); Serial.println(cap.touched(), HEX);
-  Serial.print("Filt: ");
-  for (uint8_t i=0; i<12; i++) {
-    Serial.print(cap.filteredData(i)); Serial.print("\t");
-  }
-  Serial.println();
-  Serial.print("Base: ");
-  for (uint8_t i=0; i<12; i++) {
-    Serial.print(cap.baselineData(i)); Serial.print("\t");
-  }
-  Serial.println();
-
-  // put a delay so it isn't overwhelming
-  delay(100);
-}
+  delay(10);
+} 
